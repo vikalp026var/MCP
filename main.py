@@ -1,15 +1,16 @@
 from fastmcp import FastMCP
 import os
-import sqlite3
+import asyncio
+import aiosqlite
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "expenses.db")
 
 mcp = FastMCP(name="Expense Tracker")
 
 
-def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
+async def init_db():
+    async with aiosqlite.connect(DB_PATH) as conn:  # fix: async with, not with
+        await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS expenses (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -21,13 +22,11 @@ def init_db():
             )
             """
         )
-
-
-init_db()
+        await conn.commit()  # fix: commit the CREATE TABLE
 
 
 @mcp.tool
-def add_expense(
+async def add_expense(
     date: str,
     amount: float,
     category: str,
@@ -35,14 +34,15 @@ def add_expense(
     note: str | None = None,
 ):
     """Add a new expense to the database."""
-    with sqlite3.connect(DB_PATH) as conn:
-        curr = conn.execute(
+    async with aiosqlite.connect(DB_PATH) as conn:  # fix: async with, not with
+        curr = await conn.execute(  # fix: await the execute call
             """
             INSERT INTO expenses (date, amount, category, subcategory, note)
             VALUES (?, ?, ?, ?, ?)
             """,
             (date, amount, category, subcategory, note),
         )
+        await conn.commit()  # fix: commit the INSERT
 
         return {
             "status": "ok",
@@ -51,37 +51,53 @@ def add_expense(
 
 
 @mcp.tool
-def list_expenses():
+async def list_expenses():
     """List all expenses in the database."""
-    with sqlite3.connect(DB_PATH) as conn:
-        curr = conn.execute(
+    async with aiosqlite.connect(DB_PATH) as conn:  # fix: async with + aiosqlite (was sqlite3)
+        curr = await conn.execute(  # fix: await + closing paren was missing
             """
             SELECT id, date, amount, category, subcategory, note
             FROM expenses
             ORDER BY id ASC
             """
         )
-        cols = [col[0] for col in curr.description]
-        return [dict(zip(cols, row)) for row in curr.fetchall()]
+        rows = await curr.fetchall()  # fix: was missing entirely — cut off mid-function
+        return [
+            {
+                "id": row[0],
+                "date": row[1],
+                "amount": row[2],
+                "category": row[3],
+                "subcategory": row[4],
+                "note": row[5],
+            }
+            for row in rows
+        ]
 
 
 @mcp.tool
-def summarize_expenses(start_date: str, end_date: str):
-    """Summarize expenses between two dates"""
-    with sqlite3.connect(DB_PATH) as conn:
-        curr = conn.execute(
+async def summarize_expenses(start_date: str, end_date: str):  # fix: was merged into list_expenses
+    """Summarize expenses between two dates."""
+    async with aiosqlite.connect(DB_PATH) as conn:  # fix: async with
+        curr = await conn.execute(
             """
             SELECT SUM(amount) FROM expenses WHERE date BETWEEN ? AND ?
             """,
-            (start_date, end_date)
+            (start_date, end_date),
         )
         return {
-            "total": curr.fetchone()[0],
+            "total": (await curr.fetchone())[0],
         }
 
-if __name__ == "__main__":
+
+async def main():  # fix: can't call `await` at module top-level; wrap in main()
+    await init_db()
     mcp.run(
         transport="streamable-http",
         host="0.0.0.0",
         port=8000,
-    )
+    )  # fix: removed asyncio_loop= (not a valid FastMCP.run() parameter)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
